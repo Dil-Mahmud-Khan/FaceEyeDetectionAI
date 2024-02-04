@@ -1,8 +1,8 @@
-from flask import Flask, Response
+from flask import Flask, request, jsonify
 import cv2
 import dlib
 import json
-import time
+import numpy as np
 
 app = Flask(__name__)
 
@@ -12,13 +12,12 @@ face_detector = dlib.get_frontal_face_detector()
 # Load the facial landmarks predictor from dlib
 predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
-# Variables for face movement detection (initialize outside the function)
+# Variables for face movement detection
 prev_left, prev_right, prev_up, prev_down = False, False, False, False
 
 # Variables for eye blink detection
-EYE_AR_THRESH = 0.2  # Adjust this threshold
-EYE_AR_CONSEC_FRAMES = 4  # Adjust this number
-EAR_BUFFER_SIZE = 10  # Adjust the buffer size
+EYE_AR_THRESH = 0.2
+EYE_AR_CONSEC_FRAMES = 4
 COUNTER = 0
 ear_buffer = []
 
@@ -65,28 +64,32 @@ def process_frame(frame):
     # Initialize json_response
     json_response = {"face_direction": "None", "eye_blink": False}
 
-    # Declare global variables
     global prev_left, prev_right, prev_up, prev_down, COUNTER, ear_buffer
 
     # Detect faces
     faces = detect_faces(frame)
 
-    for face in faces:
+    if faces:  # Only proceed if faces are detected
+        # Get the first detected face (assuming only one face in the frame)
+        face = faces[0]
+
         # Get facial landmarks
         landmarks = predictor(frame, face)
 
         # Detect face movements
         x, y, w, h = face.left(), face.top(), face.width(), face.height()
-        moved_left = x < prev_left
-        moved_right = x + w > prev_right
-        moved_up = y < prev_up
-        moved_down = y + h > prev_down
+
+        # Adjustments for more accurate face direction detection
+        moved_left = x < prev_left and abs(y - prev_up) < h / 3
+        moved_right = x + w > prev_right and abs(y - prev_up) < h / 3
+        moved_up = y < prev_up and abs(x - prev_left) < w / 3
+        moved_down = y + h > prev_down and abs(x - prev_left) < w / 3
 
         # Update previous face positions
         prev_left, prev_right, prev_up, prev_down = x, x + w, y, y + h
 
         # Provide feedback based on face movements
-        face_direction = "None"  # Default value
+        face_direction = "None"
 
         if moved_left:
             face_direction = "Left"
@@ -114,7 +117,7 @@ def process_frame(frame):
         ear_buffer.append(avg_ear)
 
         # Keep the buffer size within the defined limit
-        ear_buffer = ear_buffer[-EAR_BUFFER_SIZE:]
+        ear_buffer = ear_buffer[-EYE_AR_CONSEC_FRAMES:]
 
         # Check for eye blink using the smoothed ear values
         if avg_ear < EYE_AR_THRESH and len(ear_buffer) >= EYE_AR_CONSEC_FRAMES:
@@ -125,25 +128,25 @@ def process_frame(frame):
 
     return json_response
 
-def generate_frames():
-    video_capture = cv2.VideoCapture(0)
+@app.route('/analyze_image', methods=['POST'])
+def analyze_image():
+    # Check if the POST request contains a file
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
 
-    while True:
-        # Read a frame from the video stream
-        ret, frame = video_capture.read()
+    file = request.files['file']
 
-        # Process the frame and get face direction as JSON
-        json_response = process_frame(frame)
+    # Check if the file is empty
+    if file.filename == '':
+        return jsonify({"error": "Empty file provided"}), 400
 
-        # Send JSON response as feedback message
-        yield f"data: {json.dumps(json_response)}\n\n"
+    # Read the image from the file
+    image = cv2.imdecode(np.fromstring(file.read(), np.uint8), cv2.IMREAD_COLOR)
 
-        # Wait for 1 second before capturing the next frame
-        time.sleep(1)
+    # Process the image and get face direction as JSON
+    json_response = process_frame(image)
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(generate_frames(), mimetype='text/event-stream')
+    return jsonify(json_response)
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, threaded=True)

@@ -13,12 +13,12 @@ face_detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
 # Variables for face movement detection
-prev_left, prev_right, prev_up, prev_down = False, False, False, False
+prev_face_center = None
+face_movement_threshold = 20  # Adjust this threshold for better accuracy
 
 # Variables for eye blink detection
 EYE_AR_THRESH = 0.2
 EYE_AR_CONSEC_FRAMES = 4
-COUNTER = 0
 ear_buffer = []
 
 def detect_faces(image):
@@ -44,27 +44,23 @@ def detect_blinks(eye_points, landmarks):
     return ear
 
 def eye_aspect_ratio(eye):
-    # Calculate the distance between vertical eye landmarks
-    A = dist(eye[1], eye[5])
-    B = dist(eye[2], eye[4])
+    # Calculate the distance between vertical eye landmarks manually
+    A = np.sqrt((eye[1].x - eye[5].x) ** 2 + (eye[1].y - eye[5].y) ** 2)
+    B = np.sqrt((eye[2].x - eye[4].x) ** 2 + (eye[2].y - eye[4].y) ** 2)
 
-    # Calculate the distance between horizontal eye landmarks
-    C = dist(eye[0], eye[3])
+    # Calculate the distance between horizontal eye landmarks manually
+    C = np.sqrt((eye[0].x - eye[3].x) ** 2 + (eye[0].y - eye[3].y) ** 2)
 
     # Calculate the eye aspect ratio
     ear = (A + B) / (2.0 * C)
 
     return ear
 
-def dist(p1, p2):
-    # Calculate the Euclidean distance between two points
-    return ((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2) ** 0.5
-
 def process_frame(frame):
     # Initialize json_response
     json_response = {"face_direction": "None", "eye_blink": False}
 
-    global prev_left, prev_right, prev_up, prev_down, COUNTER, ear_buffer
+    global prev_face_center, ear_buffer
 
     # Detect faces
     faces = detect_faces(frame)
@@ -77,31 +73,27 @@ def process_frame(frame):
         landmarks = predictor(frame, face)
 
         # Detect face movements
-        x, y, w, h = face.left(), face.top(), face.width(), face.height()
+        face_center = (int((face.left() + face.right()) / 2), int((face.top() + face.bottom()) / 2))
 
-        # Adjustments for more accurate face direction detection
-        moved_left = x < prev_left and abs(y - prev_up) < h / 3
-        moved_right = x + w > prev_right and abs(y - prev_up) < h / 3
-        moved_up = y < prev_up and abs(x - prev_left) < w / 3
-        moved_down = y + h > prev_down and abs(x - prev_left) < w / 3
+        # Check if face moved significantly
+        if prev_face_center is not None:
+            # Check for specific face directions
+            x_diff = face_center[0] - prev_face_center[0]
+            y_diff = face_center[1] - prev_face_center[1]
 
-        # Update previous face positions
-        prev_left, prev_right, prev_up, prev_down = x, x + w, y, y + h
+            if abs(x_diff) > abs(y_diff):
+                if x_diff > 0:
+                    json_response["face_direction"] = "Right"
+                else:
+                    json_response["face_direction"] = "Left"
+            else:
+                if y_diff > 0:
+                    json_response["face_direction"] = "Down"
+                else:
+                    json_response["face_direction"] = "Up"
 
-        # Provide feedback based on face movements
-        face_direction = "None"
-
-        if moved_left:
-            face_direction = "Left"
-        elif moved_right:
-            face_direction = "Right"
-        elif moved_up:
-            face_direction = "Up"
-        elif moved_down:
-            face_direction = "Down"
-
-        # Update json_response
-        json_response["face_direction"] = face_direction
+        # Update previous face center
+        prev_face_center = face_center
 
         # Detect eye blinks
         left_eye_points = [36, 42, 42, 48]
@@ -124,7 +116,7 @@ def process_frame(frame):
             json_response["eye_blink"] = True
 
         # Log face direction and eye blink in the backend terminal
-        print(f"Face Direction: {face_direction}, Eye Blink: {json_response['eye_blink']}")
+        print(f"Face Direction: {json_response['face_direction']}, Eye Blink: {json_response['eye_blink']}")
 
     return json_response
 
